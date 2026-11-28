@@ -155,6 +155,7 @@ export function Hero({ onHeroComplete, isSpacerVisible }: HeroProps) {
     const DELTA_THRESHOLD = 25;
 
     const handleWheel = (e: WheelEvent) => {
+      if (e.ctrlKey) return; // leave browser zoom alone
       e.preventDefault();
 
       accumulatedDeltaY += e.deltaY;
@@ -183,6 +184,7 @@ export function Hero({ onHeroComplete, isSpacerVisible }: HeroProps) {
     };
 
     const handleTouchMove = (e: TouchEvent) => {
+      if (e.touches.length > 1) return; // leave pinch zoom alone
       e.preventDefault();
 
       const currentY = e.touches[0].clientY;
@@ -209,6 +211,8 @@ export function Hero({ onHeroComplete, isSpacerVisible }: HeroProps) {
     if (!isLocked) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Space on a focused control must activate it, not change stage
+      if (e.key === " " && (e.target as Element).closest?.("button, a, input, textarea, select")) return;
       if (e.key === "ArrowDown" || e.key === "PageDown" || e.key === " ") {
         e.preventDefault();
         changeStage(1);

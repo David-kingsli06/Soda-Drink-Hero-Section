@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { TOTAL_FRAMES, INITIAL_FRAME } from "@/lib/stages";
+import { createFrameStore, getDecodeWindowSize } from "@/lib/frameStore";
 
 interface FrameCanvasProps {
   targetFrame: number;
@@ -23,7 +24,8 @@ export function FrameCanvas({
   onLoadingProgress,
 }: FrameCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const bitmapsRef = useRef<(ImageBitmap | null)[]>(new Array(TOTAL_FRAMES).fill(null));
+  const storeRef = useRef<ReturnType<typeof createFrameStore> | null>(null);
+  const wantedFrameRef = useRef<number>(INITIAL_FRAME);
   const [canvasVisible, setCanvasVisible] = useState(false);
   const [loadProgress, setLoadProgress] = useState(0);
 
@@ -41,7 +43,12 @@ export function FrameCanvas({
     const ctx = canvas.getContext("2d", { alpha: false });
     if (!ctx) return;
 
-    const bitmap = bitmapsRef.current[frameIndex];
+    wantedFrameRef.current = frameIndex;
+    currentFrameRef.current = frameIndex;
+    const store = storeRef.current;
+    if (!store) return;
+    store.setPlayhead(frameIndex);
+    const bitmap = store.getNearest(frameIndex)?.bitmap;
     if (!bitmap) return;
 
     const canvasWidth = canvas.width;
@@ -73,7 +80,6 @@ export function FrameCanvas({
     ctx.imageSmoothingQuality = "high";
 
     ctx.drawImage(bitmap, offsetX, offsetY, drawWidth, drawHeight);
-    currentFrameRef.current = frameIndex;
   }, []);
 
   const updateCanvasDimensions = useCallback(() => {
@@ -105,68 +111,42 @@ export function FrameCanvas({
     };
   }, [updateCanvasDimensions]);
 
-  // Decode frame 191 (initial landing frame) first, draw immediately, then decode all remaining frames
+  // Latest callbacks, without restarting frame loading when they change
+  const callbacksRef = useRef({ onFrameLoaded, onLoadingProgress });
   useEffect(() => {
-    let isCancelled = false;
+    callbacksRef.current = { onFrameLoaded, onLoadingProgress };
+  });
 
-    async function loadAllFrames() {
-      try {
-        // 1. Fetch & decode initial frame 191 first
-        const respInitial = await fetch(getFramePath(INITIAL_FRAME));
-        const blobInitial = await respInitial.blob();
-        if (isCancelled) return;
-        const bitmapInitial = await createImageBitmap(blobInitial);
-        if (isCancelled) return;
-
-        bitmapsRef.current[INITIAL_FRAME] = bitmapInitial;
-        updateCanvasDimensions();
-        drawFrame(INITIAL_FRAME);
-
-        setCanvasVisible(true);
-        if (onFrameLoaded) onFrameLoaded();
-
-        // 2. Decode remaining frames into ImageBitmaps (from 190 down to 0)
-        let loadedCount = 1;
-        const remainingIndices: number[] = [];
-        for (let i = TOTAL_FRAMES - 1; i >= 0; i--) {
-          if (i !== INITIAL_FRAME) remainingIndices.push(i);
+  // Download every frame once; keep only the frames near the playhead decoded.
+  // Holding all 192 decoded 1080p frames would take about 1.6 GB of memory.
+  useEffect(() => {
+    let shown = false;
+    const store = createFrameStore({
+      scenes: [{ folder: "/frames", frameCount: TOTAL_FRAMES }],
+      getUrl: (_folder, frameNumber) => getFramePath(frameNumber - 1),
+      windowSize: getDecodeWindowSize(),
+      onDecoded: () => {
+        drawFrame(wantedFrameRef.current);
+        if (!shown) {
+          shown = true;
+          setCanvasVisible(true);
+          callbacksRef.current.onFrameLoaded?.();
         }
-
-        const batchSize = 10;
-        for (let i = 0; i < remainingIndices.length; i += batchSize) {
-          if (isCancelled) break;
-          const batch = remainingIndices.slice(i, i + batchSize).map((frameIdx) =>
-            (async () => {
-              try {
-                const resp = await fetch(getFramePath(frameIdx));
-                const blob = await resp.blob();
-                if (isCancelled) return;
-                const bm = await createImageBitmap(blob);
-                if (isCancelled) return;
-                bitmapsRef.current[frameIdx] = bm;
-              } catch (e) {
-                console.warn(`Failed to decode frame ${frameIdx}:`, e);
-              } finally {
-                loadedCount++;
-                const progress = loadedCount / TOTAL_FRAMES;
-                setLoadProgress(progress);
-                if (onLoadingProgress) onLoadingProgress(progress);
-              }
-            })()
-          );
-          await Promise.all(batch);
-        }
-      } catch (err) {
-        console.error("Frame loading error:", err);
-      }
-    }
-
-    loadAllFrames();
-
+      },
+      onProgress: (percent) => {
+        setLoadProgress(percent / 100);
+        callbacksRef.current.onLoadingProgress?.(percent / 100);
+      },
+    });
+    storeRef.current = store;
+    updateCanvasDimensions();
+    store.setPlayhead(wantedFrameRef.current);
+    store.start();
     return () => {
-      isCancelled = true;
+      store.destroy();
+      storeRef.current = null;
     };
-  }, [drawFrame, getFramePath, onFrameLoaded, onLoadingProgress, updateCanvasDimensions]);
+  }, [drawFrame, getFramePath, updateCanvasDimensions]);
 
   // Real-time 24 fps playback driven by time mapping with monotonic ease-in-out
   useEffect(() => {
@@ -261,7 +241,7 @@ export function FrameCanvas({
       <canvas
         ref={canvasRef}
         role="img"
-        aria-label="Unbranded aluminum soda can floats, zooms, opens, pours, and rotates against a dark blue smoky background."
+        aria-label="One Energy can floats, zooms, opens, pours, and rotates against a dark blue smoky background."
         className="w-full h-full object-cover transition-opacity duration-600 ease-out"
         style={{
           opacity: canvasVisible ? 1 : 0,

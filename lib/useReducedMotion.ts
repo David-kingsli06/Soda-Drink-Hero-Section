@@ -1,29 +1,20 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 
-/**
- * Hook to detect whether the user prefers reduced motion.
- * Respects OS/browser 'prefers-reduced-motion: reduce' accessibility setting.
- */
+const QUERY = "(prefers-reduced-motion: reduce)";
+
+function subscribe(onChange: () => void) {
+  const media = window.matchMedia(QUERY);
+  media.addEventListener("change", onChange);
+  return () => media.removeEventListener("change", onChange);
+}
+
+// The server render assumes motion is allowed; the browser value follows on hydration.
 export function useReducedMotion(): boolean {
-  const [prefersReducedMotion, setPrefersReducedMotion] = useState<boolean>(false);
-
-  useEffect(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return;
-
-    const mediaQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
-    setPrefersReducedMotion(mediaQuery.matches);
-
-    const listener = (event: MediaQueryListEvent) => {
-      setPrefersReducedMotion(event.matches);
-    };
-
-    mediaQuery.addEventListener("change", listener);
-    return () => {
-      mediaQuery.removeEventListener("change", listener);
-    };
-  }, []);
-
-  return prefersReducedMotion;
+  return useSyncExternalStore(
+    subscribe,
+    () => window.matchMedia(QUERY).matches,
+    () => false
+  );
 }
